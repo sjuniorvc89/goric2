@@ -33,11 +33,36 @@ def health_check():
 def run_flask():
     app.run(host='0.0.0.0', port=PORT)
 
-# --- LÓGICA DEL BOT (Igual a la original) ---
 async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # (Tu lógica de OCR y Sheets aquí...)
-    await update.message.reply_text("Imagen recibida, procesando...")
-    # ... resto del código ...
+    msg = await update.message.reply_text("🔎 1. Descargando imagen...")
+    try:
+        # Paso 1: Descarga
+        photo = await update.message.photo[-1].get_file()
+        img_bytes = await photo.download_as_bytearray()
+        img = Image.open(BytesIO(img_bytes))
+        
+        await msg.edit_text("⚙️ 2. Ejecutando OCR (Tesseract)...")
+        # Paso 2: OCR
+        text = pytesseract.image_to_string(img)
+        
+        if not text.strip():
+            await msg.edit_text("⚠️ OCR terminado pero no se encontró texto.")
+            return
+
+        await msg.edit_text("📊 3. Guardando en Google Sheets...")
+        # Paso 3: Sheets
+        gc = gspread.service_account(filename=GOOGLE_SHEETS_CREDENTIALS)
+        sh = gc.open(SPREADSHEET_NAME)
+        ws = sh.sheet1
+        ws.append_row([datetime.now().strftime("%Y-%m-%d %H:%M:%S"), text[:500]])
+        
+        await msg.edit_text(f"✅ ¡Todo listo!\n\n**Texto extraído:**\n{text[:300]}")
+        
+    except Exception as e:
+        import traceback
+        error_full = traceback.format_exc()
+        logging.error(error_full)
+        await msg.edit_text(f"❌ Error en el paso actual:\n{str(e)}")
 
 if __name__ == '__main__':
     # 1. Iniciamos Flask en un hilo separado para que Render esté feliz
