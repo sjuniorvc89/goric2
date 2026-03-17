@@ -14,7 +14,7 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 
 # --- CONFIGURACIÓN ---
-TOKEN = "8786440728:AAHtUY0RuhIrBoCZYYFw49E2SLkMo7GKA30"
+TOKEN = "8594067989:AAFJPuFr8wNBUrOpwWLptV2mZcjT7JLdgaw"
 GOOGLE_SHEETS_CREDENTIALS = "creds.json"
 SPREADSHEET_NAME = "Cordenadas"
 
