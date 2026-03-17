@@ -1,15 +1,13 @@
 import logging
 import re
-import asyncio
+import os
 from io import BytesIO
 from datetime import datetime
-
 import pytesseract
 from PIL import Image
 import gspread
-from pyproj import Proj
-from flask import Flask, request
-from telegram import Bot
+from telegram import Update
+from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 
 # --- CONFIGURACIÓN ---
 TOKEN = "8786440728:AAHtUY0RuhIrBoCZYYFw49E2SLkMo7GKA30"
@@ -17,65 +15,37 @@ GOOGLE_SHEETS_CREDENTIALS = "creds.json"
 SPREADSHEET_NAME = "Cordenadas"
 
 logging.basicConfig(level=logging.INFO)
-app = Flask(__name__)
-bot = Bot(token=TOKEN)
 
-REGEX_PATTERNS = {
-    "Zone": r"Zone[^\d\n]*(\d+[ \t]*[A-Za-z]?)",
-    "Northing": r"Northing[^\d\n]*([0-9.,]+)",
-    "Easting": r"Easting[^\d\n]*([0-9.,]+)",
-    "Ellip. Height": r"Ellip[^\d\n]*([0-9.,]+\s*m?)"
-}
-
-async def process_image_logic(chat_id, photo_data):
+async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = await update.message.reply_text("🔎 Procesando imagen...")
     try:
-        # 1. Descargar imagen
-        file = await bot.get_file(photo_data.file_id)
-        image_stream = BytesIO()
-        await file.download_to_memory(out=image_stream)
-        image_stream.seek(0)
+        # Descarga
+        photo = await update.message.photo[-1].get_file()
+        img_bytes = await photo.download_as_bytearray()
+        img = Image.open(BytesIO(img_bytes))
         
-        # 2. OCR
-        img = Image.open(image_stream)
-        extracted_text = pytesseract.image_to_string(img)
+        # OCR
+        text = pytesseract.image_to_string(img)
         
-        results = {}
-        for key, pattern in REGEX_PATTERNS.items():
-            match = re.search(pattern, extracted_text, re.IGNORECASE)
-            results[key] = match.group(1).strip() if match else "No encontrado"
+        # Google Sheets
+        gc = gspread.service_account(filename=GOOGLE_SHEETS_CREDENTIALS)
+        ws = gc.open(SPREADSHEET_NAME).sheet1
+        ws.append_row([datetime.now().strftime("%Y-%m-%d %H:%M:%S"), text[:100]]) # Ejemplo simple
         
-        # 3. Google Sheets
-        try:
-            gc = gspread.service_account(filename=GOOGLE_SHEETS_CREDENTIALS)
-            ws = gc.open(SPREADSHEET_NAME).sheet1
-            ws.append_row([datetime.now().strftime("%Y-%m-%d %H:%M:%S"), results['Zone'], results['Northing'], results['Easting'], results['Ellip. Height']])
-            status = "✅ Guardado en Sheets."
-        except Exception as e:
-            status = f"⚠️ Error Sheets: {str(e)}"
-
-        # 4. Responder
-        await bot.send_message(chat_id=chat_id, text=f"{status}\nZ: {results['Zone']}\nN: {results['Northing']}\nE: {results['Easting']}")
-        
+        await msg.edit_text(f"✅ Guardado. Texto detectado:\n{text[:200]}")
     except Exception as e:
-        logging.error(f"Error: {e}")
-        await bot.send_message(chat_id=chat_id, text=f"❌ Error procesando: {str(e)}")
-
-@app.route('/')
-def home():
-    return "Servidor Goric2 Ligero Activo"
-
-@app.route('/webhook', methods=['POST'])
-def webhook_handler():
-    data = request.get_json(force=True)
-    if "message" in data and "photo" in data["message"]:
-        chat_id = data["message"]["chat"]["id"]
-        photo = data["message"]["photo"][-1] # La de mejor calidad
-        
-        # Ejecutar el proceso en el hilo de eventos
-        asyncio.run(process_image_logic(chat_id, photo))
-        
-    return "OK", 200
+        await msg.edit_text(f"❌ Error: {str(e)}")
 
 if __name__ == '__main__':
-    print("Iniciando servidor Goric2 (Modo Ultra-Ligero)...")
-    app.run(host='0.0.0.0', port=7860)
+    # Render necesita que algo escuche en un puerto, aunque sea un bot
+    from flask import Flask
+    import threading
+    app = Flask(__name__)
+    @app.route('/')
+    def health(): return "Vivo"
+    threading.Thread(target=lambda: app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 10000)))).start()
+
+    # Iniciar Bot
+    application = ApplicationBuilder().token(TOKEN).build()
+    application.add_handler(MessageHandler(filters.PHOTO, handle_image))
+    application.run_polling()
