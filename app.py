@@ -14,9 +14,20 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 
 # --- CONFIGURACIÓN ---
-TOKEN = "8594067989:AAFJPuFr8wNBUrOpwWLptV2mZcjT7JLdgaw"
-GOOGLE_SHEETS_CREDENTIALS = "creds.json"
-SPREADSHEET_NAME = "Cordenadas"
+TOKEN = os.environ.get("TELEGRAM_TOKEN")
+SPREADSHEET_NAME = os.environ.get("SPREADSHEET_NAME", "Cordenadas")
+
+# Recuperar el JSON de Google desde una variable de entorno
+creds_json = os.environ.get("GOOGLE_CREDS_JSON")
+
+if creds_json:
+    creds_data = json.loads(creds_json)
+    # Limpieza de la llave como hicimos antes
+    if "\\n" in creds_data['private_key']:
+        creds_data['private_key'] = creds_data['private_key'].replace("\\n", "\n")
+else:
+    logging.error("No se encontró la variable GOOGLE_CREDS_JSON")
+
 
 # Render asigna un puerto automáticamente en la variable de entorno PORT
 PORT = int(os.environ.get("PORT", 10000))
