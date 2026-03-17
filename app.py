@@ -34,35 +34,30 @@ def run_flask():
     app.run(host='0.0.0.0', port=PORT)
 
 async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = await update.message.reply_text("🔎 1. Descargando imagen...")
-    try:
-        # Paso 1: Descarga
-        photo = await update.message.photo[-1].get_file()
-        img_bytes = await photo.download_as_bytearray()
-        img = Image.open(BytesIO(img_bytes))
-        
-        await msg.edit_text("⚙️ 2. Ejecutando OCR (Tesseract)...")
-        # Paso 2: OCR
-        text = pytesseract.image_to_string(img)
-        
-        if not text.strip():
-            await msg.edit_text("⚠️ OCR terminado pero no se encontró texto.")
-            return
+    # ... (pasos anteriores) ...
 
-        await msg.edit_text("📊 3. Guardando en Google Sheets...")
-        # Paso 3: Sheets
-        gc = gspread.service_account(filename=GOOGLE_SHEETS_CREDENTIALS)
+    try:
+        # Cargar el archivo de credenciales manualmente para limpiar la llave
+        with open(GOOGLE_SHEETS_CREDENTIALS, 'r') as f:
+            creds_data = json.load(f)
+        
+        # LIMPIEZA CRÍTICA: Reemplaza saltos de línea mal formateados
+        if "\\n" in creds_data['private_key']:
+            creds_data['private_key'] = creds_data['private_key'].replace("\\n", "\n")
+        
+        # Autenticar con los datos corregidos
+        gc = gspread.service_account_from_dict(creds_data)
         sh = gc.open(SPREADSHEET_NAME)
         ws = sh.sheet1
+        
+        # Guardar (ajusta 'text' según tu variable de OCR)
         ws.append_row([datetime.now().strftime("%Y-%m-%d %H:%M:%S"), text[:500]])
         
-        await msg.edit_text(f"✅ ¡Todo listo!\n\n**Texto extraído:**\n{text[:300]}")
-        
+        await msg.edit_text("✅ ¡Guardado exitosamente en Google Sheets!")
+
     except Exception as e:
-        import traceback
-        error_full = traceback.format_exc()
-        logging.error(error_full)
-        await msg.edit_text(f"❌ Error en el paso actual:\n{str(e)}")
+        logging.error(f"Error en Sheets: {e}")
+        await msg.edit_text(f"❌ Error en Google Sheets: {str(e)}")
 
 if __name__ == '__main__':
     # Arrancar Flask en hilo separado
