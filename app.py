@@ -65,13 +65,14 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Error en el paso actual:\n{str(e)}")
 
 if __name__ == '__main__':
-    # 1. Iniciamos Flask en un hilo separado para que Render esté feliz
+    # Arrancar Flask en hilo separado
     threading.Thread(target=run_flask, daemon=True).start()
     
-    # 2. Iniciamos el Bot de Telegram en modo Polling (más fácil en Render)
-    print(f"Iniciando Bot en puerto {PORT}...")
+    # Arrancar Bot con parámetros de recuperación
     application = ApplicationBuilder().token(TOKEN).build()
     application.add_handler(MessageHandler(filters.PHOTO, handle_image))
     
-    # run_polling bloquea el hilo principal, manteniendo el contenedor vivo
-    application.run_polling()
+    print("Iniciando Bot Goric en Render...")
+    
+    # Usamos estos parámetros para forzar a que ignore errores de sesión vieja
+    application.run_polling(drop_pending_updates=True, close_loop=False)
