@@ -1,0 +1,7 @@
+python-telegram-bot
+pytesseract
+Pillow
+gspread
+gspread-formatting
+pyproj
+flask[async]
