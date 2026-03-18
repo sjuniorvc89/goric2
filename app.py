@@ -178,6 +178,9 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # 7. Responder al usuario
             resumen = "✅ **¡Registro completo y guardado con éxito!**\n\n"
             resumen += f"🌐 Zone: `{row_to_append[1]}`\n"
+            resumen += f"⬆️ Northing: `{row_to_append[2]}`\n"
+            resumen += f"➡️ Easting: `{row_to_append[3]}`\n"
+            resumen += f"🏔️ Height: `{row_to_append[4]}`"
             resumen += f"📍 **Ubicación:** [Abrir en Maps]({maps_link})\n"
             if foto_url != "No disponible":
                 resumen += f"🖼️ **Evidencia:** [Ver Foto]({foto_url})"
