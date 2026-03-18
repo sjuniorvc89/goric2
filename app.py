@@ -23,7 +23,6 @@ PORT = int(os.environ.get("PORT", 10000))
 logging.basicConfig(level=logging.INFO)
 
 # --- ESTADOS DEL BOT (Memoria) ---
-# Guarda en qué paso va cada usuario
 USER_STATES = {}
 
 # --- WEB PARA RENDER (FLASK) ---
@@ -31,7 +30,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def health_check():
-    return "Bot Goric activo con OCR y Fotos", 200
+    return "Bot Goric activo con OCR y Subida de Fotos Robusta", 200
 
 def run_flask():
     app.run(host='0.0.0.0', port=PORT)
@@ -100,15 +99,31 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
             photo_file = await update.message.photo[-1].get_file()
             img_bytes = await photo_file.download_as_bytearray()
             
-            # 2. Subir a Telegra.ph (Hosting gratuito de imágenes)
+            # 2. SUBIDA DE IMAGEN ROBUSTA (Plan A y Plan B)
             foto_url = "No disponible"
+            
+            # Plan A: Intentar con Catbox.moe (No bloquea a Render)
             try:
-                files = {'file': ('evidencia.jpg', img_bytes, 'image/jpeg')}
-                upload_res = requests.post('https://telegra.ph/upload', files=files).json()
-                if isinstance(upload_res, list) and 'src' in upload_res[0]:
-                    foto_url = 'https://telegra.ph' + upload_res[0]['src']
+                url_catbox = "https://catbox.moe/user/api.php"
+                data_catbox = {"reqtype": "fileupload"}
+                # Usamos BytesIO para que el servidor lo reconozca como un archivo real
+                files_catbox = {"fileToUpload": ("evidencia.jpg", BytesIO(img_bytes), "image/jpeg")}
+                res_catbox = requests.post(url_catbox, data=data_catbox, files=files_catbox)
+                
+                if res_catbox.status_code == 200 and res_catbox.text.startswith("http"):
+                    foto_url = res_catbox.text
             except Exception as e:
-                logging.error(f"Error subiendo foto: {e}")
+                logging.error(f"Catbox falló: {e}")
+
+            # Plan B: Si Catbox falla, intentar con Telegra.ph
+            if foto_url == "No disponible":
+                try:
+                    files_tele = {'file': ('evidencia.jpg', BytesIO(img_bytes), 'image/jpeg')}
+                    res_tele = requests.post('https://telegra.ph/upload', files=files_tele).json()
+                    if isinstance(res_tele, list) and 'src' in res_tele[0]:
+                        foto_url = 'https://telegra.ph' + res_tele[0]['src']
+                except Exception as e:
+                    logging.error(f"Telegraph falló: {e}")
 
             # 3. Calcular Google Maps
             maps_link = "No disponible"
@@ -166,6 +181,8 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
             resumen += f"📍 **Ubicación:** [Abrir en Maps]({maps_link})\n"
             if foto_url != "No disponible":
                 resumen += f"🖼️ **Evidencia:** [Ver Foto]({foto_url})"
+            else:
+                resumen += "\n⚠️ *(Nota: No se pudo subir la foto por restricciones del servidor externo)*"
             
             await msg.edit_text(resumen, parse_mode='Markdown', disable_web_page_preview=True)
 
