@@ -30,7 +30,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def health_check():
-    return "Bot Goric activo con OCR y Subida de Fotos Robusta", 200
+    return "Bot Goric activo con Usuarios y Fotos", 200
 
 def run_flask():
     app.run(host='0.0.0.0', port=PORT)
@@ -95,18 +95,23 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             extracted_data = USER_STATES[chat_id]['datos_ocr']
             
+            # --- CAPTURAR DATOS DEL USUARIO ---
+            user = update.effective_user
+            nombre_usuario = user.first_name
+            if user.last_name:
+                nombre_usuario += f" {user.last_name}"
+            if user.username:
+                nombre_usuario += f" (@{user.username})"
+            
             # 1. Descargar la nueva foto
             photo_file = await update.message.photo[-1].get_file()
             img_bytes = await photo_file.download_as_bytearray()
             
-            # 2. SUBIDA DE IMAGEN ROBUSTA (Plan A y Plan B)
+            # 2. SUBIDA DE IMAGEN (Plan A: Catbox | Plan B: Telegraph)
             foto_url = "No disponible"
-            
-            # Plan A: Intentar con Catbox.moe (No bloquea a Render)
             try:
                 url_catbox = "https://catbox.moe/user/api.php"
                 data_catbox = {"reqtype": "fileupload"}
-                # Usamos BytesIO para que el servidor lo reconozca como un archivo real
                 files_catbox = {"fileToUpload": ("evidencia.jpg", BytesIO(img_bytes), "image/jpeg")}
                 res_catbox = requests.post(url_catbox, data=data_catbox, files=files_catbox)
                 
@@ -115,7 +120,6 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logging.error(f"Catbox falló: {e}")
 
-            # Plan B: Si Catbox falla, intentar con Telegra.ph
             if foto_url == "No disponible":
                 try:
                     files_tele = {'file': ('evidencia.jpg', BytesIO(img_bytes), 'image/jpeg')}
@@ -150,16 +154,17 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
             sh = gc.open(SPREADSHEET_NAME)
             ws = sh.sheet1
             
-            # Crear cabeceras si la hoja está vacía
+            # Crear cabeceras si la hoja está vacía (Añadimos "Usuario")
             if len(ws.get_all_values()) == 0:
-                ws.append_row(["Fecha", "Zone", "Northing", "Easting", "Height", "Google Maps", "Previsualización", "Enlace Foto"])
+                ws.append_row(["Fecha", "Usuario", "Zone", "Northing", "Easting", "Height", "Google Maps", "Previsualización", "Enlace Foto"])
 
-            # 5. Guardar los datos. =IMAGE() hace que la foto se vea en la celda
+            # 5. Guardar los datos
             timestamp_now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             formula_imagen = f'=IMAGE("{foto_url}")' if foto_url != "No disponible" else "Sin foto"
 
             row_to_append = [
                 timestamp_now,
+                nombre_usuario,  # <--- AQUÍ GUARDAMOS EL NOMBRE DEL USUARIO DE TELEGRAM
                 extracted_data['zone'] if extracted_data['zone'] else 'No encontrado',
                 extracted_data['northing'] if extracted_data['northing'] else 'No encontrado',
                 extracted_data['easting'] if extracted_data['easting'] else 'No encontrado',
@@ -169,15 +174,15 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 foto_url
             ]
             
-            # 'USER_ENTERED' es obligatorio para que Google Sheets procese la fórmula =IMAGE
             ws.append_row(row_to_append, value_input_option='USER_ENTERED')
             
-            # 6. Limpiar la memoria para el próximo registro
+            # 6. Limpiar la memoria
             del USER_STATES[chat_id]
             
             # 7. Responder al usuario
             resumen = "✅ **¡Registro completo y guardado con éxito!**\n\n"
-            resumen += f"🌐 Zone: `{row_to_append[1]}`\n"
+            resumen += f"👤 **Registrado por:** {nombre_usuario}\n"
+            resumen += f"🌐 Zone: `{row_to_append[2]}`\n"
             resumen += f"⬆️ Northing: `{row_to_append[2]}`\n"
             resumen += f"➡️ Easting: `{row_to_append[3]}`\n"
             resumen += f"🏔️ Height: `{row_to_append[4]}`"
@@ -198,7 +203,7 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- INICIO ---
 if __name__ == '__main__':
     threading.Thread(target=run_flask, daemon=True).start()
-    print("Iniciando Bot Goric en 2 Pasos...")
+    print("Iniciando Bot Goric multi-usuario...")
     application = ApplicationBuilder().token(TOKEN).build()
     application.add_handler(MessageHandler(filters.PHOTO, handle_image))
     application.run_polling(drop_pending_updates=True)
