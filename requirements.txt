@@ -5,3 +5,4 @@ gspread
 gspread-formatting
 pyproj
 flask[async]
+requests
