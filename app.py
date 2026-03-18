@@ -1,7 +1,7 @@
 import logging
 import os
-import json
 import re
+import json
 import threading
 from io import BytesIO
 from datetime import datetime
@@ -9,7 +9,6 @@ from datetime import datetime
 import pytesseract
 from PIL import Image
 import gspread
-from pyproj import Proj
 from flask import Flask
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
@@ -22,78 +21,58 @@ PORT = int(os.environ.get("PORT", 10000))
 
 logging.basicConfig(level=logging.INFO)
 
-# --- CONFIGURACIÓN DE PROYECCIÓN (UTM) ---
-# Adaptado del archivo subido
-# Se asume WGS84, Zona 18 Sur (Ajustar si es necesario)
-myProj = Proj("+proj=utm +zone=18 +south +ellps=WGS84 +datum=WGS84 +units=m +no_defs")
-
 # --- WEB PARA RENDER (FLASK) ---
 app = Flask(__name__)
 
 @app.route('/')
 def health_check():
-    return "Bot Goric activo con Extracción", 200
+    return "Bot Goric activo con Extracción Simplificada", 200
 
 def run_flask():
     app.run(host='0.0.0.0', port=PORT)
 
-# --- FUNCIONES DE EXTRACCIÓN Y TRANSFORMACIÓN (Adaptadas del archivo subido) ---
+# --- FUNCIONES DE EXTRACCIÓN (Simplificadas para los datos solicitados) ---
 
-def transform_wgs84_to_utm(lon, lat):
-    """Transforma coordenadas WGS84 (lat/lon) a UTM."""
-    try:
-        easting, northing = myProj(lon, lat)
-        return easting, northing
-    except Exception as e:
-        logging.error(f"Error en transformación UTM: {e}")
-        return None, None
-
-def extract_data_from_text(text):
-    """
-    Busca patrones específicos en el texto OCR usando regex.
-    Retorna un diccionario con los datos encontrados.
-    """
+def extract_specific_data(text):
+    """Busca patrones específicos de Zone, Northing, Easting y Height en el texto OCR."""
     data = {
-        'coordenadas': None,
-        'nombre_foto': None,
-        'fecha': None,
-        'hora': None
+        'zone': None,
+        'northing': None,
+        'easting': None,
+        'height': None
     }
 
-    # --- PATRONES REGEX (Basados en el archivo app.py subido) ---
-    
-    # 1. Coordenadas (Busca formatos tipo: "Coordenadas: 12.3456, -78.9012" o similares)
-    # Este patrón es flexible para capturar números decimales
-    coord_pattern = r"Coordenadas:\s*([-+]?\d*\.\d+|\d+)\s*,\s*([-+]?\d*\.\d+|\d+)"
-    coord_match = re.search(coord_pattern, text, re.IGNORECASE)
-    if coord_match:
-        data['coordenadas'] = coord_match.group(1) + ", " + coord_match.group(2)
+    # --- PATRONES REGEX ESPECÍFICOS ---
+    # 1. Zone (Busca patrón: "Zone: 18 L" o similar)
+    zone_pattern = r"Zone:\s*(\d+\s*[A-Za-z])"
+    zone_match = re.search(zone_pattern, text, re.IGNORECASE)
+    if zone_match:
+        data['zone'] = zone_match.group(1).strip()
 
-    # 2. Nombre de la foto (Busca patrones tipo: "P_20231027_103005" o similares)
-    photo_pattern = r"P_(\d{8})_(\d{6})"
-    photo_match = re.search(photo_pattern, text, re.IGNORECASE)
-    if photo_match:
-        # Reconstruye el nombre completo si es necesario, aquí solo capturamos los grupos
-        data['nombre_foto'] = "P_" + photo_match.group(1) + "_" + photo_match.group(2)
+    # 2. Northing (Busca patrón: "Northing: 8657476.081" o similar)
+    northing_pattern = r"Northing:\s*([\d\.]+)"
+    northing_match = re.search(northing_pattern, text, re.IGNORECASE)
+    if northing_match:
+        data['northing'] = northing_match.group(1).strip()
 
-    # 3. Fecha (Formatos comunes: DD/MM/AAAA, AA/MM/DD, etc. Se busca DD/MM/AAAA primero)
-    date_pattern = r"(\d{1,2}/\d{1,2}/\d{4})"
-    date_match = re.search(date_pattern, text)
-    if date_match:
-        data['fecha'] = date_match.group(1)
+    # 3. Easting (Busca patrón: "Easting: 284501.586" o similar)
+    easting_pattern = r"Easting:\s*([\d\.]+)"
+    easting_match = re.search(easting_pattern, text, re.IGNORECASE)
+    if easting_match:
+        data['easting'] = easting_match.group(1).strip()
 
-    # 4. Hora (Formatos: HH:MM:SS o HH:MM)
-    time_pattern = r"(\d{1,2}:\d{2}(?::\d{2})?)"
-    time_match = re.search(time_pattern, text)
-    if time_match:
-        data['hora'] = time_match.group(1)
+    # 4. Ellip. Height (Busca patrón: "Ellip. Height: 131.766m" o similar)
+    height_pattern = r"Ellip\.\s*Height:\s*([\d\.]+\s*m?)"
+    height_match = re.search(height_pattern, text, re.IGNORECASE)
+    if height_match:
+        data['height'] = height_match.group(1).strip()
 
     return data
 
-# --- MANEJADOR DE IMÁGENES (Lógica Principal) ---
+# --- MANEJADOR DE IMÁGENES ---
 
 async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = await update.message.reply_text("📸 Imagen recibida. Procesando e intentando extraer datos...")
+    msg = await update.message.reply_text("📸 Imagen recibida. Extrayendo datos específicos...")
     try:
         # 1. DESCARGA Y PROCESAMIENTO DE IMAGEN
         photo_file = await update.message.photo[-1].get_file()
@@ -101,25 +80,28 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
         img = Image.open(BytesIO(img_bytes))
         
         # 2. EJECUCIÓN DEL OCR (Tesseract)
-        await msg.edit_text("⚙️ Extrayendo texto general...")
         text_ocr = pytesseract.image_to_string(img)
         
         if not text_ocr.strip():
-            await msg.edit_text("⚠️ No se detectó texto legible en la imagen. No se guardará nada.")
+            await msg.edit_text("⚠️ No se detectó texto legible en la imagen.")
             return
 
-        # 3. EXTRACCIÓN DE DATOS ESPECÍFICOS (Lógica adaptada)
-        await msg.edit_text("🔍 Buscando coordenadas, fecha, hora y nombre de foto...")
-        extracted_data = extract_data_from_text(text_ocr)
+        # 3. EXTRACCIÓN DE DATOS ESPECÍFICOS
+        extracted_data = extract_specific_data(text_ocr)
 
-        # 4. AUTENTICACIÓN CON GOOGLE SHEETS (Lógica funcional en Render)
+        # Verificar si se encontró al menos un dato relevante
+        if not any(extracted_data.values()):
+             await msg.edit_text("⚠️ No se encontraron datos de Zone, Northing, Easting o Height en la imagen.")
+             return
+
+        # 4. AUTENTICACIÓN CON GOOGLE SHEETS
         await msg.edit_text("📊 Conectando con Google Sheets...")
         creds_json = os.environ.get("GOOGLE_CREDS_JSON")
         if not creds_json:
             raise Exception("No se encontró la variable GOOGLE_CREDS_JSON en Render")
 
         creds_data = json.loads(creds_json)
-        # Limpieza de la llave private_key (Vital para Render)
+        # Limpieza de la llave private_key
         if "private_key" in creds_data:
             creds_data["private_key"] = creds_data["private_key"].replace("\\n", "\n")
 
@@ -128,33 +110,35 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sh = gc.open(SPREADSHEET_NAME)
         ws = sh.sheet1
         
-        # Prepara la fila con los datos extraídos (o 'No encontrado')
+        # Crear encabezados si la hoja está vacía
+        if len(ws.get_all_values()) == 0:
+            ws.append_row(["Fecha Procesamiento", "Zone", "Northing", "Easting", "Ellip. Height"])
+
+        # Prepara la fila con los datos extraídos o 'No encontrado'
         timestamp_now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
         row_to_append = [
             timestamp_now,
-            extracted_data['nombre_foto'] if extracted_data['nombre_foto'] else 'No encontrado',
-            extracted_data['fecha'] if extracted_data['fecha'] else 'No encontrado',
-            extracted_data['hora'] if extracted_data['hora'] else 'No encontrado',
-            extracted_data['coordenadas'] if extracted_data['coordenadas'] else 'No encontrado',
-            text_ocr[:2000] # Guardamos el OCR completo al final, limitado a 2000 caracteres
+            extracted_data['zone'] if extracted_data['zone'] else 'No encontrado',
+            extracted_data['northing'] if extracted_data['northing'] else 'No encontrado',
+            extracted_data['easting'] if extracted_data['easting'] else 'No encontrado',
+            extracted_data['height'] if extracted_data['height'] else 'No encontrado'
         ]
         
         ws.append_row(row_to_append)
         
         # 6. MENSAJE DE ÉXITO AL USUARIO
-        # Construimos un resumen de lo encontrado
-        resumen = "✅ **¡Datos guardados con éxito!**\n\n**Resumen de extracción:**\n"
-        resumen += f"🏷️ Foto: `{row_to_append[1]}`\n"
-        resumen += f"📅 Fecha: `{row_to_append[2]}`\n"
-        resumen += f"🕒 Hora: `{row_to_append[3]}`\n"
-        resumen += f"📍 Coords: `{row_to_append[4]}`\n"
+        # Construimos un resumen amigable de lo encontrado
+        resumen = "✅ **¡Datos extraídos y guardados con éxito!**\n\n"
+        resumen += f"🌐 Zone: `{row_to_append[1]}`\n"
+        resumen += f"⬆️ Northing: `{row_to_append[2]}`\n"
+        resumen += f"➡️ Easting: `{row_to_append[3]}`\n"
+        resumen += f"🏔️ Height: `{row_to_append[4]}`"
         
         await msg.edit_text(resumen, parse_mode='Markdown')
 
     except Exception as e:
         logging.error(f"Error en el proceso: {e}")
-        # En caso de error, intentamos editar el mensaje o enviar uno nuevo
         try:
             await msg.edit_text(f"❌ Error durante el procesamiento: {str(e)}")
         except:
@@ -163,13 +147,12 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- INICIO DE LA APLICACIÓN ---
 
 if __name__ == '__main__':
-    # Hilo para el servidor web Flask (necesario para Render)
+    # Hilo para Flask (necesario para Render)
     threading.Thread(target=run_flask, daemon=True).start()
     
-    # Iniciar la aplicación de Telegram (modo Polling, funcional en Render)
-    print("Iniciando Bot Goric con extracción de datos...")
+    # Iniciar la aplicación de Telegram
+    print("Iniciando Bot Goric optimizado para datos de imagen...")
     application = ApplicationBuilder().token(TOKEN).build()
     application.add_handler(MessageHandler(filters.PHOTO, handle_image))
     
-    # run_polling bloquea el hilo principal, manteniendo el bot vivo
     application.run_polling(drop_pending_updates=True)
