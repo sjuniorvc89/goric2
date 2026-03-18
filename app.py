@@ -3,13 +3,14 @@ import os
 import re
 import json
 import threading
+import requests
 from io import BytesIO
 from datetime import datetime
 
 import pytesseract
 from PIL import Image
 import gspread
-from pyproj import Proj  # <- IMPORTANTE PARA CONVERTIR COORDENADAS
+from pyproj import Proj
 from flask import Flask
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
@@ -18,100 +19,88 @@ from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filte
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 SPREADSHEET_NAME = os.environ.get("SPREADSHEET_NAME", "Cordenadas")
 PORT = int(os.environ.get("PORT", 10000))
-USER_STATES = {}
+
 logging.basicConfig(level=logging.INFO)
+
+# --- ESTADOS DEL BOT (Memoria) ---
+# Guarda en qué paso va cada usuario
+USER_STATES = {}
 
 # --- WEB PARA RENDER (FLASK) ---
 app = Flask(__name__)
 
 @app.route('/')
 def health_check():
-    return "Bot Goric activo con OCR y Maps", 200
+    return "Bot Goric activo con OCR y Fotos", 200
 
 def run_flask():
     app.run(host='0.0.0.0', port=PORT)
 
 # --- FUNCIONES DE EXTRACCIÓN ---
-
 def extract_specific_data(text):
-    data = {
-        'zone': None,
-        'northing': None,
-        'easting': None,
-        'height': None
-    }
+    data = {'zone': None, 'northing': None, 'easting': None, 'height': None}
+    
+    zone_match = re.search(r"Zone[^\d\n]*(\d+\s*[A-Za-z]?)", text, re.IGNORECASE)
+    if zone_match: data['zone'] = zone_match.group(1).strip()
 
-    zone_pattern = r"Zone[^\d\n]*(\d+\s*[A-Za-z]?)"
-    zone_match = re.search(zone_pattern, text, re.IGNORECASE)
-    if zone_match:
-        data['zone'] = zone_match.group(1).strip()
+    northing_match = re.search(r"Northing[^\d\n]*([\d\.,]+)", text, re.IGNORECASE)
+    if northing_match: data['northing'] = northing_match.group(1).strip()
 
-    northing_pattern = r"Northing[^\d\n]*([\d\.,]+)"
-    northing_match = re.search(northing_pattern, text, re.IGNORECASE)
-    if northing_match:
-        data['northing'] = northing_match.group(1).strip()
+    easting_match = re.search(r"Easting[^\d\n]*([\d\.,]+)", text, re.IGNORECASE)
+    if easting_match: data['easting'] = easting_match.group(1).strip()
 
-    easting_pattern = r"Easting[^\d\n]*([\d\.,]+)"
-    easting_match = re.search(easting_pattern, text, re.IGNORECASE)
-    if easting_match:
-        data['easting'] = easting_match.group(1).strip()
-
-    height_pattern = r"Ellip[^\d\n]*([\d\.,]+\s*m?)"
-    height_match = re.search(height_pattern, text, re.IGNORECASE)
-    if height_match:
-        data['height'] = height_match.group(1).strip()
+    height_match = re.search(r"Ellip[^\d\n]*([\d\.,]+\s*m?)", text, re.IGNORECASE)
+    if height_match: data['height'] = height_match.group(1).strip()
 
     return data
 
-# --- MANEJADOR DE IMÁGENES ---
-
+# --- MANEJADOR PRINCIPAL DE IMÁGENES ---
 async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    
-    # Revisamos en qué paso está el usuario (por defecto: 'ESPERANDO_OCR')
     estado_actual = USER_STATES.get(chat_id, {}).get('state', 'ESPERANDO_OCR')
 
-    # ======================================================
-    # PASO 1: RECIBE LA CAPTURA Y EXTRAE COORDENADAS
-    # ======================================================
+    # ==========================================
+    # PASO 1: LEER LA CAPTURA (OCR)
+    # ==========================================
     if estado_actual == 'ESPERANDO_OCR':
         msg = await update.message.reply_text("📸 Captura recibida. Leyendo coordenadas...")
-        
-        # 1. Descarga y OCR (igual que antes)
-        photo_file = await update.message.photo[-1].get_file()
-        img_bytes = await photo_file.download_as_bytearray()
-        img = Image.open(BytesIO(img_bytes))
-        text_ocr = pytesseract.image_to_string(img)
-        
-        extracted_data = extract_specific_data(text_ocr)
-
-        if not any(extracted_data.values()):
-             await msg.edit_text("⚠️ No pude leer las coordenadas. Intenta enviar la captura de nuevo.")
-             return
-
-        # 2. Guardamos los datos en la memoria temporal del bot y cambiamos el estado
-        USER_STATES[chat_id] = {
-            'state': 'ESPERANDO_FOTO',
-            'datos_ocr': extracted_data
-        }
-        
-        await msg.edit_text("✅ **¡Coordenadas leídas con éxito!**\n\n📸 Ahora, por favor envíame la **foto del lugar/evidencia**.")
-
-
-    # ======================================================
-    # PASO 2: RECIBE LA FOTO DE EVIDENCIA Y GUARDA TODO
-    # ======================================================
-    elif estado_actual == 'ESPERANDO_FOTO':
-        msg = await update.message.reply_text("⏳ Subiendo evidencia y guardando en Google Sheets...")
         try:
-            # 1. Recuperamos los datos que guardamos en el Paso 1
+            photo_file = await update.message.photo[-1].get_file()
+            img_bytes = await photo_file.download_as_bytearray()
+            img = Image.open(BytesIO(img_bytes))
+            
+            text_ocr = pytesseract.image_to_string(img)
+            extracted_data = extract_specific_data(text_ocr)
+
+            if not any(extracted_data.values()):
+                 await msg.edit_text("⚠️ No pude leer las coordenadas. Intenta enviar la captura de nuevo con más nitidez.")
+                 return
+
+            # Guardamos en memoria y pasamos al Paso 2
+            USER_STATES[chat_id] = {
+                'state': 'ESPERANDO_FOTO',
+                'datos_ocr': extracted_data
+            }
+            
+            await msg.edit_text("✅ **¡Coordenadas leídas!**\n\n📸 Ahora, envíame la **foto del lugar/evidencia** para adjuntarla.")
+
+        except Exception as e:
+            logging.error(f"Error en OCR: {e}")
+            await msg.edit_text("❌ Ocurrió un error leyendo la imagen.")
+
+    # ==========================================
+    # PASO 2: RECIBIR EVIDENCIA Y GUARDAR EN SHEETS
+    # ==========================================
+    elif estado_actual == 'ESPERANDO_FOTO':
+        msg = await update.message.reply_text("⏳ Subiendo foto y guardando el registro completo...")
+        try:
             extracted_data = USER_STATES[chat_id]['datos_ocr']
             
-            # 2. Descargamos la nueva foto (Evidencia)
+            # 1. Descargar la nueva foto
             photo_file = await update.message.photo[-1].get_file()
             img_bytes = await photo_file.download_as_bytearray()
             
-            # 3. Subimos la foto a Telegraph para obtener un enlace público
+            # 2. Subir a Telegra.ph (Hosting gratuito de imágenes)
             foto_url = "No disponible"
             try:
                 files = {'file': ('evidencia.jpg', img_bytes, 'image/jpeg')}
@@ -121,9 +110,9 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logging.error(f"Error subiendo foto: {e}")
 
-            # 4. Calculamos Google Maps (como ya lo tenías)
+            # 3. Calcular Google Maps
             maps_link = "No disponible"
-            if extracted_data['zone'] and extracted_data['northing']:
+            if extracted_data['zone'] and extracted_data['northing'] and extracted_data['easting']:
                 try:
                     zone_match = re.search(r'(\d+)', extracted_data['zone'])
                     if zone_match:
@@ -136,7 +125,7 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception:
                     pass
 
-            # 5. Conectamos a Google Sheets
+            # 4. Conectar a Google Sheets
             creds_json = os.environ.get("GOOGLE_CREDS_JSON")
             creds_data = json.loads(creds_json)
             if "private_key" in creds_data:
@@ -146,48 +135,50 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
             sh = gc.open(SPREADSHEET_NAME)
             ws = sh.sheet1
             
-            # Creamos cabeceras si está vacío (Añadimos la columna "Foto")
+            # Crear cabeceras si la hoja está vacía
             if len(ws.get_all_values()) == 0:
-                ws.append_row(["Fecha", "Zone", "Northing", "Easting", "Height", "Google Maps", "Foto", "Enlace Foto"])
+                ws.append_row(["Fecha", "Zone", "Northing", "Easting", "Height", "Google Maps", "Previsualización", "Enlace Foto"])
 
-            # 6. Preparamos la fila. Usamos la fórmula =IMAGE() para que Sheets muestre la foto
+            # 5. Guardar los datos. =IMAGE() hace que la foto se vea en la celda
             timestamp_now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             formula_imagen = f'=IMAGE("{foto_url}")' if foto_url != "No disponible" else "Sin foto"
 
             row_to_append = [
                 timestamp_now,
-                extracted_data['zone'],
-                extracted_data['northing'],
-                extracted_data['easting'],
-                extracted_data['height'],
+                extracted_data['zone'] if extracted_data['zone'] else 'No encontrado',
+                extracted_data['northing'] if extracted_data['northing'] else 'No encontrado',
+                extracted_data['easting'] if extracted_data['easting'] else 'No encontrado',
+                extracted_data['height'] if extracted_data['height'] else 'No encontrado',
                 maps_link,
-                formula_imagen,  # Esto mostrará la imagen en la celda
-                foto_url         # Esto guarda el enlace directo por si acaso
+                formula_imagen,
+                foto_url
             ]
             
-            # IMPORTANTE: value_input_option='USER_ENTERED' permite que Sheets lea la fórmula =IMAGE()
+            # 'USER_ENTERED' es obligatorio para que Google Sheets procese la fórmula =IMAGE
             ws.append_row(row_to_append, value_input_option='USER_ENTERED')
             
-            # 7. Borramos la memoria para que el usuario pueda enviar una nueva captura
+            # 6. Limpiar la memoria para el próximo registro
             del USER_STATES[chat_id]
             
-            # 8. Mensaje final
-            resumen = "✅ **¡Registro completo y guardado!**\n\n"
-            resumen += f"📍 **Maps:** [Abrir Ubicación]({maps_link})\n"
-            resumen += f"🖼️ **Foto:** [Ver Evidencia]({foto_url})"
+            # 7. Responder al usuario
+            resumen = "✅ **¡Registro completo y guardado con éxito!**\n\n"
+            resumen += f"🌐 Zone: `{row_to_append[1]}`\n"
+            resumen += f"📍 **Ubicación:** [Abrir en Maps]({maps_link})\n"
+            if foto_url != "No disponible":
+                resumen += f"🖼️ **Evidencia:** [Ver Foto]({foto_url})"
             
             await msg.edit_text(resumen, parse_mode='Markdown', disable_web_page_preview=True)
 
         except Exception as e:
-            logging.error(f"Error en el guardado final: {e}")
-            await msg.edit_text("❌ Ocurrió un error al guardar. Intentemos desde el principio (envía la captura de coordenadas de nuevo).")
-            # En caso de error, reiniciamos el estado para no dejarlo atascado
+            logging.error(f"Error en el Paso 2: {e}")
+            await msg.edit_text("❌ Error al guardar. Se ha cancelado el proceso, envía la captura de coordenadas para intentar de nuevo.")
             if chat_id in USER_STATES:
                 del USER_STATES[chat_id]
 
+# --- INICIO ---
 if __name__ == '__main__':
     threading.Thread(target=run_flask, daemon=True).start()
-    print("Iniciando Bot Goric...")
+    print("Iniciando Bot Goric en 2 Pasos...")
     application = ApplicationBuilder().token(TOKEN).build()
     application.add_handler(MessageHandler(filters.PHOTO, handle_image))
     application.run_polling(drop_pending_updates=True)
