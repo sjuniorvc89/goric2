@@ -46,30 +46,46 @@ def run_flask():
     app.run(host='0.0.0.0', port=PORT)
 
 async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # ... (pasos anteriores) ...
+    # 1. Definimos msg al principio para evitar el NameError
+    msg = await update.message.reply_text("📸 Imagen recibida. Procesando...")
 
     try:
-        # Cargar el archivo de credenciales manualmente para limpiar la llave
-        with open(GOOGLE_SHEETS_CREDENTIALS, 'r') as f:
-            creds_data = json.load(f)
+        # 2. Descarga y OCR (Asegúrate de que este bloque esté completo)
+        photo_file = await update.message.photo[-1].get_file()
+        img_bytes = await photo_file.download_as_bytearray()
+        img = Image.open(BytesIO(img_bytes))
         
-        # LIMPIEZA CRÍTICA: Reemplaza saltos de línea mal formateados
-        if "\\n" in creds_data['private_key']:
-            creds_data['private_key'] = creds_data['private_key'].replace("\\n", "\n")
+        await msg.edit_text("⚙️ Ejecutando OCR...")
+        text = pytesseract.image_to_string(img)
+
+        # 3. Uso de la variable de entorno de Render
+        await msg.edit_text("📊 Conectando con Google Sheets...")
         
-        # Autenticar con los datos corregidos
+        # Obtenemos la variable que configuraste en la imagen de Render
+        creds_json = os.environ.get("GOOGLE_CREDS_JSON")
+        
+        if not creds_json:
+            raise Exception("No se encontró la variable GOOGLE_CREDS_JSON en Render")
+
+        creds_data = json.loads(creds_json)
+        
+        # Limpieza de la llave (Vital para evitar el error de firma JWT)
+        if "private_key" in creds_data and "\\n" in creds_data["private_key"]:
+            creds_data["private_key"] = creds_data["private_key"].replace("\\n", "\n")
+
+        # 4. Autenticación y guardado
         gc = gspread.service_account_from_dict(creds_data)
         sh = gc.open(SPREADSHEET_NAME)
         ws = sh.sheet1
         
-        # Guardar (ajusta 'text' según tu variable de OCR)
         ws.append_row([datetime.now().strftime("%Y-%m-%d %H:%M:%S"), text[:500]])
         
-        await msg.edit_text("✅ ¡Guardado exitosamente en Google Sheets!")
+        await msg.edit_text(f"✅ ¡Guardado exitosamente!\n\n**Texto extraído:**\n{text[:200]}...")
 
     except Exception as e:
-        logging.error(f"Error en Sheets: {e}")
-        await msg.edit_text(f"❌ Error en Google Sheets: {str(e)}")
+        logging.error(f"Error en el proceso: {e}")
+        # Ahora 'msg' siempre está disponible aquí
+        await msg.edit_text(f"❌ Error: {str(e)}")
 
 if __name__ == '__main__':
     # Arrancar Flask en hilo separado
